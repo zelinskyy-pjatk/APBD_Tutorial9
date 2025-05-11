@@ -7,11 +7,12 @@ namespace Tutorial9.Services;
 public class WarehouseService : IWarehouseService
 {
     private readonly IConfiguration _configuration;
-
     public WarehouseService(IConfiguration configuration) => _configuration = configuration;
     
+    /* -- Method to add Product to Warehouse -- */
     public async Task<int> AddProductAsync(WarehouseProductDTO warehouseProductDto)
     {
+        // -- SQL Commands -- //
         const string checkProductSQL_Command = "SELECT 1 FROM Product WHERE IdProduct = @IdProduct";
         const string checkWarehouseSQL_Command = "SELECT 1 FROM Warehouse WHERE IdWarehouse = @IdWarehouse";
         const string checkOrderSQL_Command = """
@@ -32,7 +33,7 @@ public class WarehouseService : IWarehouseService
                                                     SELECT SCOPE_IDENTITY();
                                                 """;
         
-        
+        // -- Establish connection using "Default" Connection String -- //
         using (var conn = new SqlConnection(_configuration.GetConnectionString("Default")))
         {
             await conn.OpenAsync();
@@ -56,16 +57,17 @@ public class WarehouseService : IWarehouseService
                             throw new Exception("Warehouse was not found.");
                     }
                     
+                    // -- Check whether amount is not zero or less -- //
                     if (warehouseProductDto.Amount <= 0)
                         throw new Exception("Amount must be greater than zero.");
 
+                    // -- Check whether order exists, amount is correct and CreatedAt date is valid -- //
                     int orderId;
-
                     using (var checkOrderCMD = new SqlCommand(checkOrderSQL_Command, conn, transaction))
                     {
                         checkOrderCMD.Parameters.AddWithValue("@IdProduct", warehouseProductDto.IdProduct);
                         checkOrderCMD.Parameters.AddWithValue("@Amount", warehouseProductDto.Amount);
-                        checkOrderCMD.Parameters.AddWithValue("@CreatedAt", DateTime.Now);
+                        checkOrderCMD.Parameters.AddWithValue("@CreatedAt", warehouseProductDto.CreatedAt);
 
 
                         using (var reader = await checkOrderCMD.ExecuteReaderAsync())
@@ -75,21 +77,24 @@ public class WarehouseService : IWarehouseService
                             orderId = (int)reader["IdOrder"];
                         }
                     }
-
+                    
+                    // -- Check whether Order is already fulfilled or not -- //
                     using (var fulfilledOrderCmd = new SqlCommand(checkFulfilledOrder_Command, conn, transaction))
                     {
                         fulfilledOrderCmd.Parameters.AddWithValue("@IdOrder", orderId);
                         if (await fulfilledOrderCmd.ExecuteScalarAsync() != null)
                             throw new Exception("Order is already fulfilled.");
                     }
-
+                    
+                    // -- Update Order FulfilledAt with current date and time -- // 
                     using (var updateOrderCMD = new SqlCommand(updateOrderSQL_Command, conn, transaction))
                     {
                         updateOrderCMD.Parameters.AddWithValue("@currentTime", DateTime.Now);
                         updateOrderCMD.Parameters.AddWithValue("@IdOrder", orderId);
                         await updateOrderCMD.ExecuteNonQueryAsync();
                     }
-
+                    
+                    // -- Get price of one product (unit) -- // 
                     decimal pricePerUnit;
                     using (var priceCMD = new SqlCommand(selectPriceSQL_Command, conn, transaction))
                     {
@@ -97,18 +102,20 @@ public class WarehouseService : IWarehouseService
                         pricePerUnit = (decimal) await priceCMD.ExecuteScalarAsync();
                     }
                     
+                    // -- Calculate total price of all products (product.price * amount) -- //
                     var totalPrice = pricePerUnit * warehouseProductDto.Amount;
-
+                    
+                    // -- Add Product to the Warehouse -- //
                     using (var insertProductCMD = new SqlCommand(insertProductSQL_Command, conn, transaction))
                     {
                         insertProductCMD.Parameters.AddWithValue("@IdWarehouse", warehouseProductDto.IdWarehouse);
                         insertProductCMD.Parameters.AddWithValue("@IdProduct", warehouseProductDto.IdProduct);
-                        insertProductCMD.Parameters.AddWithValue("@IdOrder", orderId);
+                        insertProductCMD.Parameters.AddWithValue("@IdOrder", orderId);                              // Received Order ID
                         insertProductCMD.Parameters.AddWithValue("@Amount", warehouseProductDto.Amount);
-                        insertProductCMD.Parameters.AddWithValue("@Price", totalPrice);
-                        insertProductCMD.Parameters.AddWithValue("@CreatedAt", DateTime.Now);
+                        insertProductCMD.Parameters.AddWithValue("@Price", totalPrice);                             // Calculated Total Price
+                        insertProductCMD.Parameters.AddWithValue("@CreatedAt", warehouseProductDto.CreatedAt);
                             
-                        var insertedID = Convert.ToInt32(await insertProductCMD.ExecuteScalarAsync());
+                        var insertedID = Convert.ToInt32(await insertProductCMD.ExecuteScalarAsync());              // Get ID of the inserted product in the Product_Warehouse table
                             
                         transaction.Commit();
                         return insertedID;
@@ -122,10 +129,13 @@ public class WarehouseService : IWarehouseService
             }
         }
     }
-
+    
+    /* -- Method to add Product to Warehouse using predefined procedure -- */
     public async Task<int> AddProductProcedureAsync(WarehouseProductDTO warehouseProductDto)
     {
+        // -- Use "Default" Connection String configuration -- //
         await using SqlConnection connection = new SqlConnection(_configuration.GetConnectionString("Default"));
+        // -- Apply Data to the SqlCommand [connection, commandText -> procedure name, commandType -> type of the command] -- //
         await using SqlCommand command = new SqlCommand
         {
             Connection = connection,
@@ -133,13 +143,14 @@ public class WarehouseService : IWarehouseService
             CommandType = CommandType.StoredProcedure
         };
         
+        // -- Add necessary procedure parameters -- //
         command.Parameters.AddWithValue("@IdProduct", warehouseProductDto.IdProduct);
         command.Parameters.AddWithValue("@IdWarehouse", warehouseProductDto.IdWarehouse);
         command.Parameters.AddWithValue("@Amount", warehouseProductDto.Amount);
         command.Parameters.AddWithValue("@CreatedAt", warehouseProductDto.CreatedAt);
         
         await connection.OpenAsync();
-        
+        // -- Get result in the form of ID of newly inserted product -- //
         var result = await command.ExecuteScalarAsync();
         if (result == null) throw new Exception("Stored procedure returned null.");
             

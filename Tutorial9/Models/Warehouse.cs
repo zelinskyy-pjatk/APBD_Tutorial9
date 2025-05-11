@@ -1,4 +1,4 @@
-﻿namespace Tutorial9.Model;
+﻿namespace Tutorial9.Models;
 
 public class Warehouse
 {
